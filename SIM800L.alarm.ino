@@ -9,9 +9,10 @@
 
 #include <SoftwareSerial.h>
 
-// DEBUG
-#define TEST
+// DEBUG & TEST
+//#define TEST
 //#define DEBUG
+
 #ifdef DEBUG
 #define DEBUG_PRINT(x)    Serial.print (x)
 #define DEBUG_PRINTDEC(x) Serial.print (x, DEC)
@@ -27,8 +28,8 @@
 #define RXPIN 2
 #define TXPIN 3
 #define LEDPIN 13
-#define BUFFERSIZE 64
-#define OUTPUTSIZE 170
+//#define BUFFERSIZE 64
+#define OUTPUTSIZE 150
 
 //Input pins alarm
 #define actifPIN 6
@@ -43,9 +44,12 @@
 //Macros
 #define sireneSTATUS (digitalRead (sirenePIN))
 #define actifSTATUS (digitalRead (actifPIN))
-#define batSTATUS (!(digitalRead (batPIN))) // CHANGER SUR SITE
+#define batSTATUS ((digitalRead (batPIN))) // CHANGER SUR SITE
 #define autoprotSTATUS (digitalRead (autoprotPIN))
 
+#ifdef TEST
+#define batSTATUS ((digitalRead (batPIN))) // CHANGER SUR SITE
+#endif
 
 //SMS text
 #define sireneTXT "ALARME !"
@@ -76,7 +80,7 @@ byte autoprotNUM = 6;
 byte approvedNUM = 6;
 #endif
 
-char buffer[BUFFERSIZE];        // buffer array for data received from SIM800
+//char buffer[BUFFERSIZE];        // buffer array for data received from SIM800
 char SIM800output[OUTPUTSIZE];  // Parsing string
 unsigned int bufferPOS = 0;     // bufferPOS for buffer array
 unsigned long dwellstart = 0;
@@ -93,6 +97,7 @@ static char callID[20];
 boolean SMSreceived = false;
 boolean CALLreceived = false;
 boolean stopSMS = false;
+boolean outputRDY = false;
 
 SoftwareSerial SIM800(RXPIN, TXPIN);
 
@@ -124,7 +129,7 @@ void setup()
   SIM800.print(F("AT+CLIP=1;+CMGF=1;+CNMI=2,2,0,0,0\r")); // turn on caller ID notification ; turn SMS system into text mode ; Send SMS data directly to the serial connexion
   delay(200);
 
-  memset(buffer, '\0', BUFFERSIZE);       // Empty strings
+  //memset(buffer, '\0', BUFFERSIZE);       // Empty strings
   memset(SIM800output, '\0', OUTPUTSIZE);
 
   // Send status to maintenance group
@@ -234,7 +239,7 @@ void sendSMS (char * receiver, char * smsTXT) {
 }
 
 void readSIM800 () {
-  
+
   char c;
   byte nCHAR ;
   nCHAR = SIM800.available();
@@ -243,26 +248,32 @@ void readSIM800 () {
 
     for (int i = 0; i < nCHAR ; i++) {
 
-      if (bufferPOS == BUFFERSIZE) {                              // Deal with buffer overflow
-        if (SIM800output[0] != '\0') strcat (SIM800output, buffer);
-        memset(buffer, '\0', BUFFERSIZE); // Initialize buffer[]
+      if (bufferPOS == OUTPUTSIZE - 1) {                // Deal with buffer overflow
+        outputRDY = true;
         bufferPOS = 0;
+        DEBUG_PRINTLN("OVERFLOW");
+        while (SIM800.available() != 0)
+        { //Empty buffer
+          if (SIM800.read() == '\n') return;
+        }
         return;
       }
 
       c = SIM800.read();
-      buffer[bufferPOS] = c;
 
       if ((c == '\n') && (bufferPOS > 0)) {
 
-        if (buffer[bufferPOS - 1] == '\r') {
-          buffer[bufferPOS - 1] = '\0'; // Clear <CR>
-          strcat (SIM800output, buffer);
-          memset(buffer, '\0', BUFFERSIZE); // Initialize buffer[]
+        if (SIM800output[bufferPOS - 1] == '\r') {
+          SIM800output[bufferPOS - 1] = '\0'; // Clear <CR>
+          if (bufferPOS != 1) {
+            DEBUG_PRINT("bufferPOS: "); DEBUG_PRINTLN(bufferPOS);
+            outputRDY = true;
+          }
           bufferPOS = 0;
           return;
         }
       }
+      SIM800output[bufferPOS] = c;
       bufferPOS++;
     }
   }
@@ -298,7 +309,7 @@ char* approvedCALLER (char * callID2) {
 
 byte SIM800do () {
   byte ret = 0;
-  if (SIM800output[0] != '\0') {
+  if (outputRDY == true) {
 
     DEBUG_PRINT("SIM800: "); DEBUG_PRINTLN(SIM800output);
 
@@ -308,8 +319,8 @@ byte SIM800do () {
 
     if (SMSreceived) {
       if (strcmp(cmd, "Stop") == 0) {
-        stopSMS = true;                                 //stop sending SMS
         sendSMS(callID, "STOP");
+        stopSMS = true;                                 //stop sending SMS
         DEBUG_PRINTLN("STOP SENDING SMS");
 
       } else if (strcmp(cmd, "Star") == 0) {
@@ -330,7 +341,8 @@ byte SIM800do () {
         switch (cmd[1]) {
           case 'a':
             if (SIM800output[3] != '\0') {
-              memmove(SIM800output, SIM800output + 3, OUTPUTSIZE - 3);
+              memmove(SIM800output + 1, SIM800output + 3, OUTPUTSIZE - 4);
+              SIM800output[0] = '>';
               sendGroupSMS(sireneDEST, sireneNUM, SIM800output);
             }
             break;
@@ -385,14 +397,15 @@ byte SIM800do () {
     }
 
     memset(SIM800output, '\0', OUTPUTSIZE);            // Empty SIM800output for next parse.
+    outputRDY = false;
     return ret;
   }
 }
 
 char* getSTAT() {
-  //char sSTAT[9];
-  char *sSTAT = (char*)malloc(9);
-  sSTAT[8] = '\0';
+  //char sSTAT[11];
+  char *sSTAT = (char*)malloc(11);
+  sSTAT[10] = '\0';
 
   sSTAT[0] = 'e';
   sSTAT[1] = (actifSTATUS ? '1' : '0');
@@ -402,12 +415,19 @@ char* getSTAT() {
   sSTAT[5] = (batSTATUS ? '1' : '0');
   sSTAT[6] = 'a';
   sSTAT[7] = (autoprotSTATUS ? '1' : '0');
+  sSTAT[8] = 's';
+  sSTAT[9] = (stopSMS ? '1' : '0');
   DEBUG_PRINT("STATE: "); DEBUG_PRINTLN(sSTAT);
   return sSTAT;
 }
 
 void sendSTAT() {
   char * a = getSTAT();
+  boolean b = stopSMS;
+
+  stopSMS = false;
   sendSMS(callID, a);
+  stopSMS = b;
+
   free(a);
 }
