@@ -9,9 +9,9 @@
 
 #include <SoftwareSerial.h>
 
-// DEBUG & TEST
-#define TEST
-#define DEBUG
+// DEBUG & TEST - Comment these two for production
+#define TEST // For the phone numbers to be used
+#define DEBUG // For debuging through Serial
 
 #ifdef DEBUG
 #define DEBUG_PRINT(x)    Serial.print (x)
@@ -28,7 +28,6 @@
 #define RXPIN 2
 #define TXPIN 3
 #define LEDPIN 13
-//#define BUFFERSIZE 64
 #define OUTPUTSIZE 150
 
 //Input pins alarm
@@ -84,7 +83,6 @@ byte approvedLIST[] = {0, 1, 2, 3, 4, 5};
 #define approvedNUM 6
 #endif
 
-//char buffer[BUFFERSIZE];        // buffer array for data received from SIM800
 char SIM800output[OUTPUTSIZE];  // Parsing string
 unsigned int bufferPOS = 0;     // bufferPOS for buffer array
 unsigned long dwellstart = 0;
@@ -134,13 +132,11 @@ void setup()
   SIM800.print(F("AT+CLIP=1;+CMGF=1;+CNMI=2,2,0,0,0\r")); // turn on caller ID notification ; turn SMS system into text mode ; Send SMS data directly to the serial connexion
   delay(200);
 
-  //memset(buffer, '\0', BUFFERSIZE);       // Empty strings
-  memset(SIM800output, '\0', OUTPUTSIZE);
+  memset(SIM800output, '\0', OUTPUTSIZE);   // Empty string
 
-  while (SIM800.available() != 0)
-  { //Empty buffer
-    SIM800.read() ;
-  }
+  //Empty buffer
+  while (SIM800.available() != 0) SIM800.read() ;
+
   // Send status to maintenance group
   char * a = getSTAT();
   sendGroupSMS (maintDEST, maintNUM, a);
@@ -185,9 +181,7 @@ void action (int PIN) {
     switch (PIN) {
       case sirenePIN :
         sendGroupSMS(sireneDEST, sireneNUM, sireneTXT);
-        /* work in progress - 
-         * During sending of SMS, the modem still receives SMS which breaks the sequence. 
-         * For the time, these are ignored
+        /*
         char o[approvedNUM];
         boolean ToSEND;
         ToSEND = false;
@@ -229,7 +223,7 @@ void wait4ackn (byte ret) {
     ackn = SIM800do(ACKN);
   } while ((ackn != ret) || (ackn == ERR));
   if (ackn == ERR) {
-    // ERROR - SMS NOT RECEIVED
+    // ERROR - SMS NOT SENT
     DEBUG_PRINTLN("ERROR");
   } else {
     DEBUG_PRINTLN("ACKNOWLEDGED");
@@ -307,9 +301,6 @@ void findCALLid () {                                     //char* findCALLid (){
   //static char callID[20];
   memmove(&callID, p1, strsize);
   callID[strsize] = '\0';
-
-
-  //return callID;
 }
 
 byte approvedCALLER (char * callID2) {
