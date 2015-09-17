@@ -10,8 +10,8 @@
 #include <SoftwareSerial.h>
 
 // DEBUG & TEST
-//#define TEST
-//#define DEBUG
+#define TEST
+#define DEBUG
 
 #ifdef DEBUG
 #define DEBUG_PRINT(x)    Serial.print (x)
@@ -40,6 +40,10 @@
 #define OK 1
 #define ERR 2
 #define SENT 3
+#define INPUTREADY 4
+#define ACKN 0
+#define NORM 1
+#define NOTAPPROVED 255
 
 //Macros
 #define sireneSTATUS (digitalRead (sirenePIN))
@@ -61,23 +65,23 @@ char* phoneNUMBERList[] = {"33603000000", "33695000000", "33661000000", "3364000
 
 //Receivers list
 #ifdef TEST
-byte sireneDEST[] = {0};
-byte sireneNUM = 1;
+byte sireneDEST[] = {0, 0, 0};
 byte maintDEST[] = {0};
-byte maintNUM = 1;
-byte autoprotDEST[] = {0};
-byte autoprotNUM = 1;
+byte autoprotDEST[] = {0, 1};
 byte approvedLIST[] = {0, 1, 2, 3, 4, 5};
-byte approvedNUM = 6;
+#define sireneNUM 3
+#define maintNUM 1
+#define autoprotNUM 2
+#define approvedNUM 6
 #else
 byte sireneDEST[] = {0, 1, 2, 3, 4, 5};
 byte maintDEST[] = {0};
 byte autoprotDEST[] = {0, 1, 2, 3, 4, 5};
 byte approvedLIST[] = {0, 1, 2, 3, 4, 5};
-byte sireneNUM = 6;
-byte maintNUM = 1;
-byte autoprotNUM = 6;
-byte approvedNUM = 6;
+#define sireneNUM 6
+#define maintNUM 1
+#define autoprotNUM 6
+#define approvedNUM 6
 #endif
 
 //char buffer[BUFFERSIZE];        // buffer array for data received from SIM800
@@ -98,6 +102,7 @@ boolean SMSreceived = false;
 boolean CALLreceived = false;
 boolean stopSMS = false;
 boolean outputRDY = false;
+boolean SMSduringLOOP[approvedNUM];
 
 SoftwareSerial SIM800(RXPIN, TXPIN);
 
@@ -132,6 +137,10 @@ void setup()
   //memset(buffer, '\0', BUFFERSIZE);       // Empty strings
   memset(SIM800output, '\0', OUTPUTSIZE);
 
+  while (SIM800.available() != 0)
+  { //Empty buffer
+    SIM800.read() ;
+  }
   // Send status to maintenance group
   char * a = getSTAT();
   sendGroupSMS (maintDEST, maintNUM, a);
@@ -157,7 +166,7 @@ void loop()
   readSIM800();
 
   // Act according to msg received
-  SIM800do();
+  SIM800do(NORM);
 
 #ifdef DEBUG
   // Send serial commands to SIM800
@@ -176,6 +185,19 @@ void action (int PIN) {
     switch (PIN) {
       case sirenePIN :
         sendGroupSMS(sireneDEST, sireneNUM, sireneTXT);
+        /* work in progress - 
+         * During sending of SMS, the modem still receives SMS which breaks the sequence. 
+         * For the time, these are ignored
+        char o[approvedNUM];
+        boolean ToSEND;
+        ToSEND = false;
+        for (int i = 0; i < approvedNUM; i++) {
+          o[i]=(SMSduringLOOP[i] ? '1' : '0');
+          if (SMSduringLOOP[i]) ToSEND = true;
+        }
+        if (ToSEND) sendGroupSMS(sireneDEST, sireneNUM, o);
+        memset(SMSduringLOOP, 0, approvedNUM);
+        */
         break;
       case autoprotPIN :
         sendGroupSMS(autoprotDEST, autoprotNUM, autoprotTXT);
@@ -187,23 +209,27 @@ void action (int PIN) {
   }
 }
 
-void sendGroupSMS (byte receivers[], byte NUM, char smsTXT[]) { //char *smsTXT
+void sendGroupSMS (byte receivers[], byte NUM, char smsTXT[]) { //char *TXT
   int i;
+  char txt[OUTPUTSIZE];
+  memmove(txt, smsTXT, OUTPUTSIZE);
   for (i = 0; i < NUM; i++) {
-    sendSMS (phoneNUMBERList[i], smsTXT);
-    DEBUG_PRINT("SMS sent to :"); DEBUG_PRINTLN(phoneNUMBERList[i]);
+    sendSMS (phoneNUMBERList[receivers[i]], txt);
+    DEBUG_PRINT(txt); DEBUG_PRINT(" sent to :"); DEBUG_PRINTLN(phoneNUMBERList[receivers[i]]);
   }
 }
 
 void wait4ackn (byte ret) {
   byte ackn;
   memset(SIM800output, '\0', OUTPUTSIZE);
+  outputRDY = false;
+
   do {
     readSIM800();
-    ackn = SIM800do();
+    ackn = SIM800do(ACKN);
   } while ((ackn != ret) || (ackn == ERR));
   if (ackn == ERR) {
-    // ERROR - RESET SIM800 ?
+    // ERROR - SMS NOT RECEIVED
     DEBUG_PRINTLN("ERROR");
   } else {
     DEBUG_PRINTLN("ACKNOWLEDGED");
@@ -218,23 +244,13 @@ void sendSMS (char * receiver, char * smsTXT) {
     sprintf(ATcmd, "AT+CMGS=\"%s\"\r", receiver);
     SIM800.println(ATcmd);
     delay(200);
+    //    wait4ackn (INPUTREADY);
     SIM800.print(smsTXT);
     delay(200);
     SIM800.write(0x1A);
 
     wait4ackn (SENT);
     // wait4ackn (OK);
-
-    /*  SIM800.write("AT + CMGS = \"");
-    SIM800.write(receiver);
-    SIM800.write("\"\r");
-    SIM800.write(smsTXT);
-    SIM800.write(((char)26));
-    delay(100);
-    //char ctrlz[1] = {(char)26};
-    //sendATcommand(ctrlz, "OK", 2000); //the ASCII code of the ctrl+z is 26
-    delay(500);
-    */
   }
 }
 
@@ -260,13 +276,14 @@ void readSIM800 () {
       }
 
       c = SIM800.read();
+      // DEBUG_PRINT(i);DEBUG_PRINTLN(c);
 
       if ((c == '\n') && (bufferPOS > 0)) {
 
         if (SIM800output[bufferPOS - 1] == '\r') {
           SIM800output[bufferPOS - 1] = '\0'; // Clear <CR>
           if (bufferPOS != 1) {
-            DEBUG_PRINT("bufferPOS: "); DEBUG_PRINTLN(bufferPOS);
+            // DEBUG_PRINT("bufferPOS: "); DEBUG_PRINTLN(bufferPOS);
             outputRDY = true;
           }
           bufferPOS = 0;
@@ -282,7 +299,7 @@ void readSIM800 () {
 
 
 void findCALLid () {                                     //char* findCALLid (){
-
+  memset(callID, '\0', 20);
   char * p1 = strchr(SIM800output, '"' ) + sizeof(char);
   if (*p1 == '+') p1++;
   char * p2 = strchr(p1, '"' );
@@ -295,111 +312,127 @@ void findCALLid () {                                     //char* findCALLid (){
   //return callID;
 }
 
-char* approvedCALLER (char * callID2) {
+byte approvedCALLER (char * callID2) {
   DEBUG_PRINT("CALLID :"); DEBUG_PRINTLN(callID2);
 
   for (int i = 0; i < approvedNUM; i++) {
     if (strcmp(callID2, phoneNUMBERList[approvedLIST[i]]) == 0) {
       DEBUG_PRINTLN("CALLID APPROVED");
-      return callID2;
+      return i;
     }
   }
-  return '\0';
+  return NOTAPPROVED;
 }
 
-byte SIM800do () {
+byte SIM800do (boolean mode) {
   byte ret = 0;
-  if (outputRDY == true) {
 
-    DEBUG_PRINT("SIM800: "); DEBUG_PRINTLN(SIM800output);
+  if (outputRDY == true) {
+    DEBUG_PRINT(mode); DEBUG_PRINT("SIM800: "); DEBUG_PRINTLN(SIM800output);
 
     char cmd[5];
     strncpy (cmd, SIM800output, 4);
     cmd[4] = '\0';
 
-    if (SMSreceived) {
-      if (strcmp(cmd, "Stop") == 0) {
-        sendSMS(callID, "STOP");
-        stopSMS = true;                                 //stop sending SMS
-        DEBUG_PRINTLN("STOP SENDING SMS");
+    if (mode == NORM) {
 
-      } else if (strcmp(cmd, "Star") == 0) {
-        stopSMS = false;                                //(re)start sending SMS
-        dwellstart = 0;
-        sendSMS(callID, "START");
-        DEBUG_PRINTLN("START SENDING SMS");
+      if (SMSreceived ) {
+        if (strcmp(cmd, "Stop") == 0) {
+          sendSMS(callID, "STOP");
+          stopSMS = true;                                 //stop sending SMS
+          DEBUG_PRINTLN("STOP SENDING SMS");
 
-      } else if (strcmp(cmd, "Ok") == 0) {             // The receiver will deal with the alarm.
-        //char a[12];
-        sendGroupSMS(sireneDEST, sireneNUM, callID);   // Advise others.
+        } else if (strcmp(cmd, "Star") == 0) {
+          stopSMS = false;                                //(re)start sending SMS
+          dwellstart = 0;
+          sendSMS(callID, "START");
+          DEBUG_PRINTLN("START SENDING SMS");
 
-      } else if (strcmp(cmd, "Stat") == 0) {
-        sendSTAT();
+        } else if (strcmp(cmd, "Ok") == 0) {             // The receiver will deal with the alarm.
+          //char a[12];
+          sendGroupSMS(sireneDEST, sireneNUM, callID);   // Advise others.
 
-      } else if (cmd[0] == '/') {
+        } else if (strcmp(cmd, "Stat") == 0) {
+          sendSTAT();
 
-        switch (cmd[1]) {
-          case 'a':
-            if (SIM800output[3] != '\0') {
-              memmove(SIM800output + 1, SIM800output + 3, OUTPUTSIZE - 4);
-              SIM800output[0] = '>';
-              sendGroupSMS(sireneDEST, sireneNUM, SIM800output);
-            }
-            break;
+        } else if (cmd[0] == '/') {
+
+          switch (cmd[1]) {
+            case 'a':
+              if (SIM800output[3] != '\0') {
+                memmove(SIM800output + 1, SIM800output + 3, OUTPUTSIZE - 4);
+                SIM800output[0] = '>';
+                sendGroupSMS(sireneDEST, sireneNUM, SIM800output);
+              }
+              break;
+          }
+
         }
 
+        SMSreceived = false;
+
+      } else if (strcmp(cmd, "RING") == 0) {             // APPEL RECU
+        CALLreceived = true;
+
+      } else if (strcmp(cmd, "+CLI") == 0) {             // CALL ID
+
+        SIM800.print(F("ATH\r"));                        // HANG UP!
+        delay(500); //important ! To fine tune.
+        findCALLid();
+        if (CALLreceived && (approvedCALLER(callID) != NOTAPPROVED)) {
+          // Send Alarm Status
+          delay(1000);
+          sendSTAT();
+        }
+        CALLreceived = false;
+
+      } else if (strcmp(cmd, "+CMT") == 0) {             // SMS RECEIVED
+        findCALLid();
+        if (approvedCALLER(callID) != NOTAPPROVED) {              // compare CALLID with authorized numbers
+          SMSreceived = true;
+          DEBUG_PRINTLN("SMS received from approved #");
+        }
+
+      } else {                                           // Other MSG. Send to DEBUG/maintenance group
+        ret = acknSIM800do(cmd);
       }
-
-      memset(callID, '\0', 20);
-      SMSreceived = false;
-
-    } else if (strcmp(cmd, "RING") == 0) {             // APPEL RECU
-      CALLreceived = true;
-
-    } else if (strcmp(cmd, "+CLI") == 0) {             // CALL ID
-
-      SIM800.print(F("ATH\r"));                        // HANG UP!
-      delay(500); //important ! To fine tune.
-      findCALLid();
-      if (CALLreceived && (approvedCALLER(callID) != '\0')) {
-        // Send Alarm Status
-        delay(1000);
-        sendSTAT();
-      }
-      memset(callID, '\0', 20);
-      CALLreceived = false;
-
-    } else if (strcmp(cmd, "+CMT") == 0) {             // SMS RECEIVED
-      findCALLid();
-      if (approvedCALLER(callID) != '\0') {              // compare CALLID with authorized numbers
-        SMSreceived = true;
-        DEBUG_PRINTLN("SMS received from approved #");
-      }
-
-    } else if (strcmp(cmd, "OK") == 0) {               // OK. Ready.
-      ret = OK;
-
-    } else if (strcmp(cmd, "ERRO") == 0) {             // ERROR
-      ret = ERR;
-
-    } else if (strcmp(cmd, "+CMG") == 0) {             // +CMGS - SMS SENT
-      ret = SENT;
-
-    } else if (strcmp(cmd, "> ") == 0) {               // End of SMS
-
-    } else if ((strcmp(cmd, "NO C") == 0) || (strcmp(cmd, "AT") == 0) || (strcmp(cmd, "ATE0") == 0)) {         // NO CARRIER, SETUP OUTPUT
-
-    } else {                                           // Other MSG. Send to DEBUG/maintenance group
-
-      DEBUG_PRINT("UNKNOWN OUTPUT: "); DEBUG_PRINTLN(cmd);
-
-      // sendGroupSMS (maintDEST, maintNUM, SIM800output);
+    } else {
+      ret = acknSIM800do(cmd);
     }
-
     memset(SIM800output, '\0', OUTPUTSIZE);            // Empty SIM800output for next parse.
     outputRDY = false;
     return ret;
   }
+}
+
+byte acknSIM800do(char cmd[]) {
+  byte ret = 0;
+  if (strcmp(cmd, "+CMG") == 0) {             // +CMGS - SMS SENT
+    ret = SENT;
+
+  } else if (strcmp(cmd, "> ") == 0) {               // Prompt for SMS text
+    ret = INPUTREADY;
+
+  } else if ((strcmp(cmd, "NO C") == 0) || (strcmp(cmd, "AT") == 0) || (strcmp(cmd, "ATE0") == 0)) {         // NO CARRIER, SETUP OUTPUT
+
+
+  } else if (strcmp(cmd, "OK") == 0) {               // OK. Ready.
+    ret = OK;
+
+  } else if (strcmp(cmd, "ERRO") == 0) {             // ERROR
+    ret = ERR;
+
+  } else if (strcmp(cmd, "+CMT") == 0) {             // SMS RECEIVED
+    findCALLid();
+    byte OKcaller = approvedCALLER(callID);
+    if (OKcaller != NOTAPPROVED) {              // compare CALLID with authorized numbers
+      DEBUG_PRINTLN("SMS received from approved #");
+      SMSduringLOOP[OKcaller] = true;
+    }
+  } else {
+    DEBUG_PRINT("UNKNOWN OUTPUT: "); DEBUG_PRINTLN(cmd);
+  }
+  return ret;
 }
 
 char* getSTAT() {
