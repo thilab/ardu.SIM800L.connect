@@ -88,9 +88,9 @@ unsigned int bufferPOS = 0;     // bufferPOS for buffer array
 unsigned long dwellstart = 0;
 
 #ifdef DEBUG
-const int actionDwell = 60000;   // Limit action to one every 1min
+const unsigned double actionDwell = 60000;   // Limit action to one every 1min
 #else
-const int actionDwell = 300000;   // Limit action to one every 5 min
+const unsigned double actionDwell = 300000;   // Limit action to one every 5 min
 #endif
 
 
